@@ -1,7 +1,6 @@
 // Using local backend with @consumet/extensions
-// Backend: http://localhost:3001/anime
-
-const API_BASE = "http://localhost:3001/anime";
+// API URL: Uses VITE_API_URL from .env or defaults to localhost for development
+const API_BASE = `${import.meta.env.VITE_API_URL || 'http://localhost:3001'}/anime`;
 
 export interface AnimeSearchResult {
     id: string;

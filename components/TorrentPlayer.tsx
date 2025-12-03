@@ -20,7 +20,7 @@ interface TorrentStatus {
     peers: number;
 }
 
-const API_BASE = 'http://localhost:3001/api/torrent';
+const API_BASE = `${import.meta.env.VITE_API_URL || 'http://localhost:3001'}/api/torrent`;
 
 export const TorrentPlayer: React.FC<TorrentPlayerProps> = ({ magnet, title }) => {
     const [status, setStatus] = useState<'loading' | 'ready' | 'error'>('loading');
