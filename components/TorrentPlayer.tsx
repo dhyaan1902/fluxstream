@@ -53,6 +53,7 @@ export const TorrentPlayer: React.FC<TorrentPlayerProps> = ({ magnet, title }) =
     const [currentSubtitle, setCurrentSubtitle] = useState<number>(-1);
     const [needsTranscoding, setNeedsTranscoding] = useState<boolean>(false);
     const videoRef = useRef<HTMLVideoElement>(null);
+    const wakeLockRef = useRef<any>(null);
 
     // Add torrent
     useEffect(() => {
@@ -151,6 +152,62 @@ export const TorrentPlayer: React.FC<TorrentPlayerProps> = ({ magnet, title }) =
         return () => video.removeEventListener('loadedmetadata', handleLoadedMetadata);
     }, [isPlaying]);
 
+    // Wake Lock: Keep screen awake during video playback
+    useEffect(() => {
+        const video = videoRef.current;
+        if (!video) return;
+
+        const requestWakeLock = async () => {
+            try {
+                // Check if Wake Lock API is supported
+                if ('wakeLock' in navigator) {
+                    wakeLockRef.current = await (navigator as any).wakeLock.request('screen');
+                    console.log('🔒 Wake Lock acquired - screen will stay on');
+
+                    wakeLockRef.current.addEventListener('release', () => {
+                        console.log('🔓 Wake Lock released');
+                    });
+                }
+            } catch (err: any) {
+                console.error('Wake Lock error:', err.message);
+            }
+        };
+
+        const releaseWakeLock = async () => {
+            if (wakeLockRef.current) {
+                try {
+                    await wakeLockRef.current.release();
+                    wakeLockRef.current = null;
+                } catch (err: any) {
+                    console.error('Wake Lock release error:', err.message);
+                }
+            }
+        };
+
+        const handlePlay = () => {
+            requestWakeLock();
+        };
+
+        const handlePause = () => {
+            releaseWakeLock();
+        };
+
+        const handleEnded = () => {
+            releaseWakeLock();
+        };
+
+        video.addEventListener('play', handlePlay);
+        video.addEventListener('pause', handlePause);
+        video.addEventListener('ended', handleEnded);
+
+        return () => {
+            video.removeEventListener('play', handlePlay);
+            video.removeEventListener('pause', handlePause);
+            video.removeEventListener('ended', handleEnded);
+            releaseWakeLock(); // Release on unmount
+        };
+    }, [isPlaying]);
+
     // Handle audio track change
     const handleAudioTrackChange = (trackId: string) => {
         const video = videoRef.current;
@@ -247,7 +304,7 @@ export const TorrentPlayer: React.FC<TorrentPlayerProps> = ({ magnet, title }) =
                                 ref={videoRef}
                                 controls
                                 autoPlay
-                                preload="metadata"
+                                preload="auto"
                                 className="w-full h-full"
                                 src={getVideoSource()}
                                 crossOrigin="anonymous"

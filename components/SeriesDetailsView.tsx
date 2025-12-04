@@ -19,6 +19,7 @@ export const SeriesDetailsView: React.FC<SeriesDetailsViewProps> = ({ item, onCl
     const [streamLoading, setStreamLoading] = useState(false);
     const videoRef = useRef<HTMLVideoElement>(null);
     const hlsRef = useRef<Hls | null>(null);
+    const wakeLockRef = useRef<any>(null);
 
     // 1. Search and Load Series Info
     useEffect(() => {
@@ -103,6 +104,61 @@ export const SeriesDetailsView: React.FC<SeriesDetailsViewProps> = ({ item, onCl
             if (hlsRef.current) {
                 hlsRef.current.destroy();
             }
+        };
+    }, [streamUrl]);
+
+    // Wake Lock: Keep screen awake during video playback
+    useEffect(() => {
+        const video = videoRef.current;
+        if (!video) return;
+
+        const requestWakeLock = async () => {
+            try {
+                if ('wakeLock' in navigator) {
+                    wakeLockRef.current = await (navigator as any).wakeLock.request('screen');
+                    console.log('🔒 Wake Lock acquired - screen will stay on');
+
+                    wakeLockRef.current.addEventListener('release', () => {
+                        console.log('🔓 Wake Lock released');
+                    });
+                }
+            } catch (err: any) {
+                console.error('Wake Lock error:', err.message);
+            }
+        };
+
+        const releaseWakeLock = async () => {
+            if (wakeLockRef.current) {
+                try {
+                    await wakeLockRef.current.release();
+                    wakeLockRef.current = null;
+                } catch (err: any) {
+                    console.error('Wake Lock release error:', err.message);
+                }
+            }
+        };
+
+        const handlePlay = () => {
+            requestWakeLock();
+        };
+
+        const handlePause = () => {
+            releaseWakeLock();
+        };
+
+        const handleEnded = () => {
+            releaseWakeLock();
+        };
+
+        video.addEventListener('play', handlePlay);
+        video.addEventListener('pause', handlePause);
+        video.addEventListener('ended', handleEnded);
+
+        return () => {
+            video.removeEventListener('play', handlePlay);
+            video.removeEventListener('pause', handlePause);
+            video.removeEventListener('ended', handleEnded);
+            releaseWakeLock();
         };
     }, [streamUrl]);
 
@@ -201,8 +257,8 @@ export const SeriesDetailsView: React.FC<SeriesDetailsViewProps> = ({ item, onCl
                                             key={s}
                                             onClick={() => setCurrentSeason(s)}
                                             className={`px-3 py-1.5 rounded-lg text-sm font-bold transition-all ${currentSeason === s
-                                                    ? 'bg-cyan-500 text-black'
-                                                    : 'bg-slate-700 text-slate-300 hover:bg-slate-600'
+                                                ? 'bg-cyan-500 text-black'
+                                                : 'bg-slate-700 text-slate-300 hover:bg-slate-600'
                                                 }`}
                                         >
                                             {s}
@@ -218,8 +274,8 @@ export const SeriesDetailsView: React.FC<SeriesDetailsViewProps> = ({ item, onCl
                                         key={ep.id}
                                         onClick={() => setCurrentEpisode(ep)}
                                         className={`w-full p-3 rounded-lg flex items-center gap-3 transition-all text-left group ${currentEpisode?.id === ep.id
-                                                ? 'bg-cyan-500/10 border border-cyan-500/50'
-                                                : 'bg-slate-800/50 border border-transparent hover:bg-slate-700'
+                                            ? 'bg-cyan-500/10 border border-cyan-500/50'
+                                            : 'bg-slate-800/50 border border-transparent hover:bg-slate-700'
                                             }`}
                                     >
                                         <div className={`flex items-center justify-center w-8 h-8 rounded-full shrink-0 ${currentEpisode?.id === ep.id ? 'bg-cyan-500 text-black' : 'bg-slate-700 text-slate-400 group-hover:bg-slate-600'

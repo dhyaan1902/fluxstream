@@ -2,9 +2,12 @@ const express = require('express');
 const cors = require('cors');
 const torrentStream = require('torrent-stream');
 const pump = require('pump');
-const { META, ANIME, MOVIES } = require('@consumet/extensions');
+const { MOVIES } = require('@consumet/extensions');
 const ffmpeg = require('fluent-ffmpeg');
 const ffmpegPath = require('ffmpeg-static');
+
+// Import anime routes
+const animeRouter = require('./routes/anime.routes');
 
 // Set FFmpeg binary path
 ffmpeg.setFfmpegPath(ffmpegPath);
@@ -12,9 +15,7 @@ ffmpeg.setFfmpegPath(ffmpegPath);
 const app = express();
 const PORT = process.env.PORT || 3001;
 
-// Initialize Consumet Providers
-// Using AnimePahe for speed and reliability
-const animeProvider = new ANIME.AnimePahe();
+
 // Using FlixHQ for Series/Movies
 const flixhq = new MOVIES.FlixHQ();
 
@@ -145,54 +146,7 @@ app.use(cors());
 app.use(express.json());
 
 // --- Anime Routes ---
-
-// Search Anime
-app.get('/anime/search/:query', async (req, res) => {
-    try {
-        const { query } = req.params;
-        const results = await animeProvider.search(query);
-        res.json(results);
-    } catch (error) {
-        console.error('Anime search error:', error);
-        res.status(500).json({ error: 'Failed to search anime' });
-    }
-});
-
-// Get Anime Info
-app.get('/anime/info/:id', async (req, res) => {
-    try {
-        const { id } = req.params;
-        const info = await animeProvider.fetchAnimeInfo(id);
-        res.json(info);
-    } catch (error) {
-        console.error('Anime info error:', error);
-        res.status(500).json({ error: 'Failed to get anime info' });
-    }
-});
-
-// Get Anime Episodes
-app.get('/anime/episodes/:id', async (req, res) => {
-    try {
-        const { id } = req.params;
-        const info = await animeProvider.fetchAnimeInfo(id);
-        res.json(info.episodes);
-    } catch (error) {
-        console.error('Anime episodes error:', error);
-        res.status(500).json({ error: 'Failed to get anime episodes' });
-    }
-});
-
-// Get Stream Sources
-app.get('/anime/watch/:episodeId', async (req, res) => {
-    try {
-        const { episodeId } = req.params;
-        const sources = await animeProvider.fetchEpisodeSources(episodeId);
-        res.json(sources);
-    } catch (error) {
-        console.error('Anime stream error:', error);
-        res.status(500).json({ error: 'Failed to get stream sources' });
-    }
-});
+app.use('/anime', animeRouter);
 
 
 // --- Series Routes with Multi-Provider Fallback ---
@@ -204,32 +158,17 @@ const seriesProviders = [
     { name: 'Goku', instance: new MOVIES.Goku() }
 ];
 
-// Helper to try providers in sequence
-async function tryProviders(operation, ...args) {
-    let lastError = null;
-
-    for (const provider of seriesProviders) {
-        try {
-            console.log(`Trying ${provider.name} for ${operation}...`);
-            const result = await provider.instance[operation](...args);
-            if (result && (result.results?.length > 0 || result.episodes?.length > 0 || result.sources?.length > 0)) {
-                console.log(`✓ ${provider.name} succeeded for ${operation}`);
-                return result;
-            }
-        } catch (error) {
-            console.error(`✗ ${provider.name} failed:`, error.message);
-            lastError = error;
-        }
-    }
-
-    throw lastError || new Error('All providers failed');
-}
+// Helper to try providers in sequence (Specific for Series - reusing generic logic if possible, but keeping separate for safety)
+// We can refactor to use the generic tryProviders if we pass the array.
+// But for now, let's keep the existing series logic or update it to use the new generic one?
+// The existing series logic is slightly different (hardcoded seriesProviders).
+// Let's update series routes to use the new generic tryProviders for consistency.
 
 // Search Series
 app.get('/series/search/:query', async (req, res) => {
     try {
         const { query } = req.params;
-        const results = await tryProviders('search', query);
+        const results = await tryProviders(seriesProviders, 'search', query);
         res.json(results);
     } catch (error) {
         console.error('All series search providers failed:', error);
@@ -241,7 +180,7 @@ app.get('/series/search/:query', async (req, res) => {
 app.get('/series/info/:id', async (req, res) => {
     try {
         const { id } = req.params;
-        const info = await tryProviders('fetchMediaInfo', id);
+        const info = await tryProviders(seriesProviders, 'fetchMediaInfo', id);
         res.json(info);
     } catch (error) {
         console.error('All series info providers failed:', error);
@@ -253,7 +192,7 @@ app.get('/series/info/:id', async (req, res) => {
 app.get('/series/watch/:episodeId/:mediaId', async (req, res) => {
     try {
         const { episodeId, mediaId } = req.params;
-        const sources = await tryProviders('fetchEpisodeSources', episodeId, mediaId);
+        const sources = await tryProviders(seriesProviders, 'fetchEpisodeSources', episodeId, mediaId);
         res.json(sources);
     } catch (error) {
         console.error('All series stream providers failed:', error);
@@ -395,6 +334,18 @@ app.get('/api/torrent/:id/stream/:fileIndex', (req, res) => {
     const range = req.headers.range;
     const fileSize = file.length;
 
+    // Determine content type based on file extension
+    const getContentType = (filename) => {
+        if (/\.mp4$/i.test(filename)) return 'video/mp4';
+        if (/\.webm$/i.test(filename)) return 'video/webm';
+        if (/\.mkv$/i.test(filename)) return 'video/x-matroska';
+        if (/\.avi$/i.test(filename)) return 'video/x-msvideo';
+        if (/\.mov$/i.test(filename)) return 'video/quicktime';
+        return 'video/mp4'; // default
+    };
+
+    const contentType = getContentType(file.name);
+
     if (range) {
         const parts = range.replace(/bytes=/, '').split('-');
         const start = parseInt(parts[0], 10);
@@ -405,7 +356,8 @@ app.get('/api/torrent/:id/stream/:fileIndex', (req, res) => {
             'Content-Range': `bytes ${start}-${end}/${fileSize}`,
             'Accept-Ranges': 'bytes',
             'Content-Length': chunkSize,
-            'Content-Type': 'video/mp4'
+            'Content-Type': contentType,
+            'Cache-Control': 'no-cache'
         });
 
         const stream = file.createReadStream({ start, end });
@@ -413,7 +365,9 @@ app.get('/api/torrent/:id/stream/:fileIndex', (req, res) => {
     } else {
         res.writeHead(200, {
             'Content-Length': fileSize,
-            'Content-Type': 'video/mp4'
+            'Accept-Ranges': 'bytes',
+            'Content-Type': contentType,
+            'Cache-Control': 'no-cache'
         });
 
         const stream = file.createReadStream();

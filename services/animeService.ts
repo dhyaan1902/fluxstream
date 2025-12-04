@@ -48,12 +48,22 @@ export interface AnimeStreamSource {
     quality?: string;
 }
 
+export interface QualityOption {
+    id: number;
+    quality: string;
+    url: string;
+    isM3U8: boolean;
+    isDefault: boolean;
+}
+
 export interface AnimeStreamData {
     headers: {
         Referer: string;
     };
     sources: AnimeStreamSource[];
     download: string | { url: string; quality: string; }[];
+    qualities?: QualityOption[]; // Enhanced quality options
+    provider?: string; // Provider that served the stream
 }
 
 export const searchAnime = async (query: string): Promise<AnimeSearchResult[]> => {

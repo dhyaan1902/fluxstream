@@ -1,5 +1,5 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { X, Play, Download, Film, Layers } from 'lucide-react';
+import { X, Play, Download, Film, Layers, Settings } from 'lucide-react';
 import { MediaItem } from '../types';
 import { searchAnime, getAnimeInfo, getAnimeEpisodes, getAnimeStream, AnimeInfo, AnimeEpisode } from '../services/animeService';
 import Hls from 'hls.js';
@@ -16,10 +16,15 @@ export const AnimeDetailsView: React.FC<AnimeDetailsViewProps> = ({ item, onClos
     const [currentEpisode, setCurrentEpisode] = useState<AnimeEpisode | null>(null);
     const [streamUrl, setStreamUrl] = useState<string | null>(null);
     const [downloadUrl, setDownloadUrl] = useState<string | null>(null);
+    const [streamLoading, setStreamLoading] = useState(false);
+    const [availableQualities, setAvailableQualities] = useState<any[]>([]);
+    const [selectedQuality, setSelectedQuality] = useState<number>(0);
+    const [showQualityMenu, setShowQualityMenu] = useState(false);
     const [error, setError] = useState<string | null>(null);
 
     const videoRef = useRef<HTMLVideoElement>(null);
     const hlsRef = useRef<Hls | null>(null);
+    const wakeLockRef = useRef<any>(null);
 
     // Search and get anime info
     useEffect(() => {
@@ -61,20 +66,31 @@ export const AnimeDetailsView: React.FC<AnimeDetailsViewProps> = ({ item, onClos
         const loadStream = async () => {
             setStreamUrl(null);
             setDownloadUrl(null);
+            setAvailableQualities([]);
+            setSelectedQuality(0);
             setStreamLoading(true);
             try {
                 const streamData = await getAnimeStream(currentEpisode.id);
                 if (streamData) {
-                    // Find HLS source or default to first
-                    const hlsSource = streamData.sources.find(s => s.isM3U8);
-                    const source = hlsSource || streamData.sources[0];
-
-                    if (source) {
-                        setStreamUrl(source.url);
+                    // Store available qualities if provided by enhanced API
+                    if (streamData.qualities && streamData.qualities.length > 0) {
+                        setAvailableQualities(streamData.qualities);
+                        // Set default quality (first one)
+                        const defaultQuality = streamData.qualities.find((q: any) => q.isDefault) || streamData.qualities[0];
+                        setStreamUrl(defaultQuality.url);
+                        setSelectedQuality(defaultQuality.id);
+                    } else {
+                        // Fallback: use sources array
+                        const hlsSource = streamData.sources.find((s: any) => s.isM3U8);
+                        const source = hlsSource || streamData.sources[0];
+                        if (source) {
+                            setStreamUrl(source.url);
+                        }
                     }
+
+                    // Handle download URL
                     if (streamData.download) {
                         if (Array.isArray(streamData.download)) {
-                            // Pick the highest quality or first one
                             setDownloadUrl(streamData.download[streamData.download.length - 1].url);
                         } else {
                             setDownloadUrl(streamData.download);
@@ -90,79 +106,82 @@ export const AnimeDetailsView: React.FC<AnimeDetailsViewProps> = ({ item, onClos
         loadStream();
     }, [currentEpisode]);
 
-    // HLS Player Setup with Error Recovery
+    // Simple video player - stream m3u8 directly
     useEffect(() => {
         if (!streamUrl || !videoRef.current) return;
 
         const video = videoRef.current;
 
-        if (Hls.isSupported() && streamUrl.includes('.m3u8')) {
-            if (hlsRef.current) hlsRef.current.destroy();
+        // Simple direct streaming
+        video.src = streamUrl;
+        video.load();
 
-            const hls = new Hls({
-                enableWorker: true,
-                maxBufferLength: 30,
-                maxMaxBufferLength: 60,
-                manifestLoadingTimeOut: 10000,
-                manifestLoadingMaxRetry: 3,
-                levelLoadingTimeOut: 10000,
-                levelLoadingMaxRetry: 3,
-                fragLoadingTimeOut: 20000,
-                fragLoadingMaxRetry: 3,
-            });
-
-            hls.loadSource(streamUrl);
-            hls.attachMedia(video);
-            hlsRef.current = hls;
-
-            // Success handler
-            hls.on(Hls.Events.MANIFEST_PARSED, () => {
-                console.log('HLS manifest loaded');
-                video.play().catch(err => {
-                    console.log('Autoplay prevented:', err);
-                });
-            });
-
-            // Error handler with recovery
-            hls.on(Hls.Events.ERROR, (event, data) => {
-                console.error('HLS Error:', data);
-                if (data.fatal) {
-                    switch (data.type) {
-                        case Hls.ErrorTypes.NETWORK_ERROR:
-                            console.log('Network error, attempting to recover...');
-                            hls.startLoad();
-                            break;
-                        case Hls.ErrorTypes.MEDIA_ERROR:
-                            console.log('Media error, attempting to recover...');
-                            hls.recoverMediaError();
-                            break;
-                        default:
-                            console.error('Fatal error, cannot recover');
-                            hls.destroy();
-                            break;
-                    }
-                }
-            });
-
-        } else if (video.canPlayType('application/vnd.apple.mpegurl')) {
-            // Native HLS support (Safari)
-            video.src = streamUrl;
-            video.addEventListener('loadedmetadata', () => {
-                video.play().catch(err => console.log('Autoplay prevented:', err));
-            });
-        } else {
-            // Direct video
-            video.src = streamUrl;
+        const handleLoadedMetadata = () => {
             video.play().catch(err => console.log('Autoplay prevented:', err));
-        }
+        };
+
+        video.addEventListener('loadedmetadata', handleLoadedMetadata);
 
         return () => {
-            if (hlsRef.current) {
-                hlsRef.current.destroy();
-                hlsRef.current = null;
-            }
+            video.removeEventListener('loadedmetadata', handleLoadedMetadata);
+            video.src = '';
         };
     }, [streamUrl]);
+
+    // Wake Lock: Keep screen awake during video playback
+    useEffect(() => {
+        const video = videoRef.current;
+        if (!video) return;
+
+        const requestWakeLock = async () => {
+            try {
+                if ('wakeLock' in navigator) {
+                    wakeLockRef.current = await (navigator as any).wakeLock.request('screen');
+                    console.log('🔒 Wake Lock acquired - screen will stay on');
+
+                    wakeLockRef.current.addEventListener('release', () => {
+                        console.log('🔓 Wake Lock released');
+                    });
+                }
+            } catch (err: any) {
+                console.error('Wake Lock error:', err.message);
+            }
+        };
+
+        const releaseWakeLock = async () => {
+            if (wakeLockRef.current) {
+                try {
+                    await wakeLockRef.current.release();
+                    wakeLockRef.current = null;
+                } catch (err: any) {
+                    console.error('Wake Lock release error:', err.message);
+                }
+            }
+        };
+
+        const handlePlay = () => {
+            requestWakeLock();
+        };
+
+        const handlePause = () => {
+            releaseWakeLock();
+        };
+
+        const handleEnded = () => {
+            releaseWakeLock();
+        };
+
+        video.addEventListener('play', handlePlay);
+        video.addEventListener('pause', handlePause);
+        video.addEventListener('ended', handleEnded);
+
+        return () => {
+            video.removeEventListener('play', handlePlay);
+            video.removeEventListener('pause', handlePause);
+            video.removeEventListener('ended', handleEnded);
+            releaseWakeLock();
+        };
+    }, []); // Empty dependency array - only set up once
 
     const handleEpisodeChange = (ep: AnimeEpisode) => {
         setCurrentEpisode(ep);
@@ -171,6 +190,15 @@ export const AnimeDetailsView: React.FC<AnimeDetailsViewProps> = ({ item, onClos
     const handleDownload = () => {
         if (downloadUrl) {
             window.open(downloadUrl, '_blank');
+        }
+    };
+
+    const handleQualityChange = (qualityId: number) => {
+        const quality = availableQualities.find(q => q.id === qualityId);
+        if (quality) {
+            setSelectedQuality(qualityId);
+            setStreamUrl(quality.url);
+            setShowQualityMenu(false);
         }
     };
 
@@ -213,10 +241,15 @@ export const AnimeDetailsView: React.FC<AnimeDetailsViewProps> = ({ item, onClos
                                             <Film className="h-12 w-12 mb-4 opacity-50" />
                                             <p>{error}</p>
                                         </>
-                                    ) : (
+                                    ) : streamLoading ? (
                                         <>
                                             <div className="animate-spin h-10 w-10 border-2 border-blue-600 border-t-transparent rounded-full mb-4"></div>
                                             <p>Loading Stream...</p>
+                                        </>
+                                    ) : (
+                                        <>
+                                            <Film className="h-12 w-12 mb-4 opacity-50" />
+                                            <p>No stream available.</p>
                                         </>
                                     )}
                                 </div>
@@ -225,7 +258,7 @@ export const AnimeDetailsView: React.FC<AnimeDetailsViewProps> = ({ item, onClos
 
                         {/* Controls / Info */}
                         <div className="mt-6 space-y-4">
-                            <div className="flex items-center justify-between">
+                            <div className="flex items-center justify-between flex-wrap gap-4">
                                 <div>
                                     <h3 className="text-lg font-bold text-white">
                                         Episode {currentEpisode?.number}
@@ -234,15 +267,44 @@ export const AnimeDetailsView: React.FC<AnimeDetailsViewProps> = ({ item, onClos
                                         {animeData?.type} • {animeData?.status}
                                     </p>
                                 </div>
-                                {downloadUrl && (
-                                    <button
-                                        onClick={handleDownload}
-                                        className="flex items-center px-4 py-2 bg-gray-800 hover:bg-gray-700 text-white rounded-md transition-colors"
-                                    >
-                                        <Download className="h-4 w-4 mr-2" />
-                                        Download
-                                    </button>
-                                )}
+                                <div className="flex items-center gap-2">
+                                    {/* Quality Selector */}
+                                    {availableQualities.length > 1 && (
+                                        <div className="relative">
+                                            <button
+                                                onClick={() => setShowQualityMenu(!showQualityMenu)}
+                                                className="flex items-center px-4 py-2 bg-gray-800 hover:bg-gray-700 text-white rounded-md transition-colors"
+                                            >
+                                                <Settings className="h-4 w-4 mr-2" />
+                                                {availableQualities.find(q => q.id === selectedQuality)?.quality || 'Quality'}
+                                            </button>
+                                            {showQualityMenu && (
+                                                <div className="absolute right-0 mt-2 w-48 bg-gray-900 border border-gray-700 rounded-md shadow-lg z-50">
+                                                    {availableQualities.map((quality) => (
+                                                        <button
+                                                            key={quality.id}
+                                                            onClick={() => handleQualityChange(quality.id)}
+                                                            className={`w-full text-left px-4 py-2 hover:bg-gray-800 transition-colors ${quality.id === selectedQuality ? 'bg-blue-600 text-white' : 'text-gray-300'
+                                                                }`}
+                                                        >
+                                                            {quality.quality}
+                                                            {quality.id === selectedQuality && ' ✓'}
+                                                        </button>
+                                                    ))}
+                                                </div>
+                                            )}
+                                        </div>
+                                    )}
+                                    {downloadUrl && (
+                                        <button
+                                            onClick={handleDownload}
+                                            className="flex items-center px-4 py-2 bg-gray-800 hover:bg-gray-700 text-white rounded-md transition-colors"
+                                        >
+                                            <Download className="h-4 w-4 mr-2" />
+                                            Download
+                                        </button>
+                                    )}
+                                </div>
                             </div>
 
                             <p className="text-gray-400 text-sm leading-relaxed max-w-3xl">

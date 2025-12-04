@@ -3,3 +3,6 @@ console.log('Keys:', Object.keys(consumet));
 if (consumet.ANIME) {
     console.log('ANIME Keys:', Object.keys(consumet.ANIME));
 }
+if (consumet.META) {
+    console.log('META Keys:', Object.keys(consumet.META));
+}
