@@ -1,7 +1,7 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { X, Play, Download, Film, Layers, Settings } from 'lucide-react';
 import { MediaItem } from '../types';
-import { searchAnime, getAnimeInfo, getAnimeEpisodes, getAnimeStream, AnimeInfo, AnimeEpisode } from '../services/animeService';
+import { searchAnime, getAnimeInfo, getAnimeEpisodes, getAnimeStream, getAnimeProviders, getStreamFromProvider, AnimeInfo, AnimeEpisode } from '../services/animeService';
 import Hls from 'hls.js';
 
 interface AnimeDetailsViewProps {
@@ -20,6 +20,9 @@ export const AnimeDetailsView: React.FC<AnimeDetailsViewProps> = ({ item, onClos
     const [availableQualities, setAvailableQualities] = useState<any[]>([]);
     const [selectedQuality, setSelectedQuality] = useState<number>(0);
     const [showQualityMenu, setShowQualityMenu] = useState(false);
+    const [providers, setProviders] = useState<string[]>([]);
+    const [currentProvider, setCurrentProvider] = useState<string | null>(null);
+    const [showProviderMenu, setShowProviderMenu] = useState(false);
     const [error, setError] = useState<string | null>(null);
 
     const videoRef = useRef<HTMLVideoElement>(null);
@@ -57,6 +60,9 @@ export const AnimeDetailsView: React.FC<AnimeDetailsViewProps> = ({ item, onClos
             }
         };
         init();
+
+        // Fetch available providers
+        getAnimeProviders().then(setProviders);
     }, [item.title]);
 
     // Load stream when episode changes
@@ -70,8 +76,21 @@ export const AnimeDetailsView: React.FC<AnimeDetailsViewProps> = ({ item, onClos
             setSelectedQuality(0);
             setStreamLoading(true);
             try {
-                const streamData = await getAnimeStream(currentEpisode.id);
+                let streamData;
+
+                // If provider is manually selected, use that
+                if (currentProvider) {
+                    streamData = await getStreamFromProvider(currentProvider, item.title, currentEpisode.number);
+                } else {
+                    // Default auto-select
+                    streamData = await getAnimeStream(currentEpisode.id);
+                }
+
                 if (streamData) {
+                    // Update current provider if not set (from auto-select)
+                    if (!currentProvider && streamData.provider) {
+                        setCurrentProvider(streamData.provider);
+                    }
                     // Store available qualities if provided by enhanced API
                     if (streamData.qualities && streamData.qualities.length > 0) {
                         setAvailableQualities(streamData.qualities);
@@ -104,7 +123,7 @@ export const AnimeDetailsView: React.FC<AnimeDetailsViewProps> = ({ item, onClos
             }
         };
         loadStream();
-    }, [currentEpisode]);
+    }, [currentEpisode, currentProvider]);
 
     // Simple video player - stream m3u8 directly
     useEffect(() => {
@@ -202,6 +221,18 @@ export const AnimeDetailsView: React.FC<AnimeDetailsViewProps> = ({ item, onClos
         }
     };
 
+    const handleProviderChange = (provider: string) => {
+        if (provider !== currentProvider) {
+            setCurrentProvider(provider);
+            setShowProviderMenu(false);
+            // Trigger reload by resetting episode (or useEffect dependency)
+            // But since useEffect depends on currentEpisode, we need to manually trigger load
+            // A better way is to add currentProvider to dependency array of loadStream effect
+            // However, that might cause loops. Let's just force reload logic here or rely on state update.
+            // Actually, adding currentProvider to dependency array is cleaner if we handle init correctly.
+        }
+    };
+
     return (
         <div className="fixed inset-0 z-[100] flex items-center justify-center p-0 sm:p-2 md:p-4 overflow-hidden bg-black/95">
             <div className="relative w-full max-w-7xl bg-gray-900 rounded-none sm:rounded-md shadow-2xl overflow-hidden border border-gray-800 h-full max-h-[98vh] flex flex-col">
@@ -268,6 +299,34 @@ export const AnimeDetailsView: React.FC<AnimeDetailsViewProps> = ({ item, onClos
                                     </p>
                                 </div>
                                 <div className="flex items-center gap-2">
+                                    {/* Provider Selector */}
+                                    {providers.length > 0 && (
+                                        <div className="relative">
+                                            <button
+                                                onClick={() => setShowProviderMenu(!showProviderMenu)}
+                                                className="flex items-center px-4 py-2 bg-gray-800 hover:bg-gray-700 text-white rounded-md transition-colors"
+                                            >
+                                                <Layers className="h-4 w-4 mr-2" />
+                                                {currentProvider || 'Provider'}
+                                            </button>
+                                            {showProviderMenu && (
+                                                <div className="absolute right-0 mt-2 w-48 bg-gray-900 border border-gray-700 rounded-md shadow-lg z-50">
+                                                    {providers.map((provider) => (
+                                                        <button
+                                                            key={provider}
+                                                            onClick={() => handleProviderChange(provider)}
+                                                            className={`w-full text-left px-4 py-2 hover:bg-gray-800 transition-colors ${provider === currentProvider ? 'bg-blue-600 text-white' : 'text-gray-300'
+                                                                }`}
+                                                        >
+                                                            {provider}
+                                                            {provider === currentProvider && ' ✓'}
+                                                        </button>
+                                                    ))}
+                                                </div>
+                                            )}
+                                        </div>
+                                    )}
+
                                     {/* Quality Selector */}
                                     {availableQualities.length > 1 && (
                                         <div className="relative">

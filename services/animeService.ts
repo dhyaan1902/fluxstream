@@ -105,11 +105,40 @@ export const getAnimeEpisodes = async (animeId: string): Promise<AnimeEpisode[]>
 export const getAnimeStream = async (episodeId: string): Promise<AnimeStreamData | null> => {
     try {
         const res = await fetch(`${API_BASE}/watch/${encodeURIComponent(episodeId)}`);
-        if (!res.ok) throw new Error(`Stream failed: ${res.status}`);
-        const data = await res.json();
-        return data;
+        if (!res.ok) throw new Error('Failed to fetch stream');
+        return await res.json();
     } catch (e) {
         console.error("Anime stream failed:", e);
         return null;
+    }
+};
+
+export const getAnimeProviders = async (): Promise<string[]> => {
+    try {
+        const res = await fetch(`${API_BASE}/providers`);
+        if (!res.ok) throw new Error('Failed to fetch providers');
+        return await res.json();
+    } catch (e) {
+        console.error("Fetch providers failed:", e);
+        return [];
+    }
+};
+
+export const getStreamFromProvider = async (provider: string, title: string, episodeNumber: number): Promise<AnimeStreamData | null> => {
+    try {
+        const res = await fetch(`${API_BASE}/watch-provider`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ provider, title, episodeNumber })
+        });
+
+        if (!res.ok) {
+            const errorData = await res.json();
+            throw new Error(errorData.error || 'Failed to fetch stream from provider');
+        }
+        return await res.json();
+    } catch (e) {
+        console.error(`Stream from ${provider} failed:`, e);
+        throw e;
     }
 };

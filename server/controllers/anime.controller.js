@@ -60,9 +60,44 @@ async function getAnimeStream(req, res) {
     }
 }
 
+/**
+ * Get available anime providers
+ * @route GET /anime/providers
+ */
+async function getProviders(req, res) {
+    try {
+        const providers = animeService.getAnimeProviders();
+        res.json(providers);
+    } catch (error) {
+        console.error('[Anime Controller] Get providers error:', error);
+        res.status(500).json({ error: 'Failed to get providers' });
+    }
+}
+
+/**
+ * Get stream from specific provider
+ * @route POST /anime/watch-provider
+ */
+async function getStreamFromProvider(req, res) {
+    try {
+        const { provider, title, episodeNumber } = req.body;
+        if (!provider || !title || !episodeNumber) {
+            return res.status(400).json({ error: 'Missing required fields' });
+        }
+
+        const sources = await animeService.getStreamFromProvider(provider, title, episodeNumber);
+        res.json(sources);
+    } catch (error) {
+        console.error('[Anime Controller] Provider stream error:', error);
+        res.status(500).json({ error: error.message || 'Failed to get stream from provider' });
+    }
+}
+
 module.exports = {
     searchAnime,
     getAnimeInfo,
     getAnimeEpisodes,
-    getAnimeStream
+    getAnimeStream,
+    getProviders,
+    getStreamFromProvider
 };

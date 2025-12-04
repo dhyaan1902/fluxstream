@@ -4,6 +4,9 @@ const { ANIME } = require('@consumet/extensions');
 const animeProviders = [
     { name: 'AnimePahe', instance: new ANIME.AnimePahe() },
     { name: 'Hianime', instance: new ANIME.Hianime() }, // Zoro replacement
+    { name: 'AnimeKai', instance: new ANIME.AnimeKai() },
+    { name: 'KickAssAnime', instance: new ANIME.KickAssAnime() },
+    { name: 'AnimeSaturn', instance: new ANIME.AnimeSaturn() },
     // { name: 'Gogoanime', instance: new ANIME.Gogoanime() } // Currently unstable/missing
 ];
 
@@ -122,9 +125,84 @@ async function getAnimeStream(episodeId) {
     throw lastError || new Error('All anime providers failed');
 }
 
+/**
+ * Get list of available anime providers
+ * @returns {string[]} - List of provider names
+ */
+function getAnimeProviders() {
+    return animeProviders.map(p => p.name);
+}
+
+/**
+ * Get stream from a specific provider by searching for the title
+ * @param {string} providerName - Name of the provider
+ * @param {string} title - Anime title
+ * @param {number} episodeNumber - Episode number
+ * @returns {Promise} - Stream sources
+ */
+async function getStreamFromProvider(providerName, title, episodeNumber) {
+    const providerObj = animeProviders.find(p => p.name === providerName);
+    if (!providerObj) {
+        throw new Error(`Provider ${providerName} not found`);
+    }
+
+    console.log(`[Anime Service] Manual switch to ${providerName} for "${title}" Ep ${episodeNumber}`);
+
+    // 1. Search for the anime on the new provider
+    console.log(`[Anime Service] Searching for "${title}" on ${providerName}...`);
+    const searchResults = await providerObj.instance.search(title);
+
+    if (!searchResults.results || searchResults.results.length === 0) {
+        throw new Error(`Anime "${title}" not found on ${providerName}`);
+    }
+
+    // Assume the first result is the correct one (best match)
+    const animeId = searchResults.results[0].id;
+    console.log(`[Anime Service] Found ID: ${animeId}`);
+
+    // 2. Fetch episodes
+    console.log(`[Anime Service] Fetching episodes for ${animeId}...`);
+    const info = await providerObj.instance.fetchAnimeInfo(animeId);
+
+    if (!info.episodes || info.episodes.length === 0) {
+        throw new Error(`No episodes found for "${title}" on ${providerName}`);
+    }
+
+    // 3. Find the matching episode
+    const episode = info.episodes.find(ep => ep.number === parseInt(episodeNumber));
+
+    if (!episode) {
+        throw new Error(`Episode ${episodeNumber} not found on ${providerName}`);
+    }
+
+    console.log(`[Anime Service] Found Episode ID: ${episode.id}`);
+
+    // 4. Fetch stream sources
+    console.log(`[Anime Service] Fetching sources for episode ${episode.id}...`);
+    const result = await providerObj.instance.fetchEpisodeSources(episode.id);
+
+    // Enhance response
+    const enhancedResponse = {
+        ...result,
+        provider: providerName,
+        qualities: result.sources.map((source, index) => ({
+            id: index,
+            quality: source.quality || 'default',
+            url: source.url,
+            isM3U8: source.isM3U8,
+            isDefault: index === 0
+        })),
+        sources: result.sources
+    };
+
+    return enhancedResponse;
+}
+
 module.exports = {
     searchAnime,
     getAnimeInfo,
     getAnimeEpisodes,
-    getAnimeStream
+    getAnimeStream,
+    getAnimeProviders,
+    getStreamFromProvider
 };

@@ -14,4 +14,10 @@ router.get('/episodes/:id', animeController.getAnimeEpisodes);
 // Get Stream Sources
 router.get('/watch/:episodeId', animeController.getAnimeStream);
 
+// Get Available Providers
+router.get('/providers', animeController.getProviders);
+
+// Get Stream from Specific Provider
+router.post('/watch-provider', animeController.getStreamFromProvider);
+
 module.exports = router;
