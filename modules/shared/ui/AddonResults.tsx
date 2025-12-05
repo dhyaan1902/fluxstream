@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { Play, Plus, Trash2, ExternalLink, HardDrive, Download, Magnet } from 'lucide-react';
-import { StremioStream, StremioAddon, addAddon, removeAddon, getAddons } from '../services/addonService';
+import { StremioStream, StremioAddon, addAddon, removeAddon, getAddons } from '../../../services/addonService';
 
 interface AddonResultsProps {
     streams: StremioStream[];
@@ -107,17 +107,27 @@ export const AddonResults: React.FC<AddonResultsProps> = ({ streams, loading, on
                             className="group flex flex-col sm:flex-row items-start sm:items-center justify-between bg-slate-800/20 hover:bg-slate-800/50 border border-slate-700/50 hover:border-cyan-500/30 rounded-lg p-3 transition-all"
                         >
                             <div className="flex-1 min-w-0 mb-2 sm:mb-0 mr-4">
-                                <div className="flex items-center gap-2 mb-1">
+                                <div className="flex items-center gap-2 mb-1 flex-wrap">
                                     <span className="px-1.5 py-0.5 rounded bg-cyan-500/10 text-cyan-400 text-[10px] font-bold border border-cyan-500/20">
                                         {stream.addonName}
                                     </span>
-                                    {stream.name && (
-                                        <span className="text-xs font-bold text-slate-300">
-                                            {stream.name}
+                                    {stream.quality && (
+                                        <span className="px-1.5 py-0.5 rounded bg-purple-500/10 text-purple-400 text-[10px] font-bold border border-purple-500/20">
+                                            {stream.quality}
+                                        </span>
+                                    )}
+                                    {stream.seeders !== undefined && stream.seeders > 0 && (
+                                        <span className="px-1.5 py-0.5 rounded bg-green-500/10 text-green-400 text-[10px] font-bold border border-green-500/20">
+                                            👤 {stream.seeders}
+                                        </span>
+                                    )}
+                                    {stream.size && (
+                                        <span className="px-1.5 py-0.5 rounded bg-orange-500/10 text-orange-400 text-[10px] font-bold border border-orange-500/20">
+                                            💾 {stream.size}
                                         </span>
                                     )}
                                 </div>
-                                <p className="text-sm text-slate-400 font-mono truncate" title={stream.title}>
+                                <p className="text-sm text-slate-400 font-mono truncate" title={stream.fullTitle || stream.title}>
                                     {stream.title || stream.url || 'Unknown Stream'}
                                 </p>
                             </div>

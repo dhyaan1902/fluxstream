@@ -7,6 +7,9 @@ import { MediaType, MediaItem, TorrentSource } from "../types";
 const CINEMETA_BASE = "https://v3-cinemeta.strem.io";
 const JIKAN_BASE = "https://api.jikan.moe/v4";
 const YTS_API_BASE = "https://yts.mx/api/v2";
+const TMDB_BASE = "https://api.themoviedb.org/3";
+const TMDB_API_KEY = import.meta.env.VITE_TMDB_API_KEY || "8d6d91941230817f7807d643736e8a49"; // Free public key as fallback
+
 
 // 2. Torrent APIs (Mixed)
 const APIBAY_BASE = "https://apibay.org";
@@ -172,21 +175,26 @@ const fetchJikanTrending = async (): Promise<MediaItem[]> => {
 export const searchMedia = async (query: string): Promise<MediaItem[]> => {
   const encodedQuery = encodeURIComponent(query);
 
-  // Parallel Search (Direct)
-  const [cinemetaResults, jikanResults] = await Promise.all([
+  // Parallel Search across all content types
+  const [movieResults, seriesResults, animeResults] = await Promise.all([
     (async () => {
-      // Cinemeta Search
+      // Cinemeta Movie Search
       const data = await fetchDirect(`${CINEMETA_BASE}/catalog/movie/top/search=${encodedQuery}.json`);
       return data?.metas ? data.metas.map((m: any) => mapCinemetaToMedia(m, MediaType.MOVIE)) : [];
     })(),
     (async () => {
-      // Jikan Search
+      // Cinemeta Series Search
+      const data = await fetchDirect(`${CINEMETA_BASE}/catalog/series/top/search=${encodedQuery}.json`);
+      return data?.metas ? data.metas.map((m: any) => mapCinemetaToMedia(m, MediaType.SERIES)) : [];
+    })(),
+    (async () => {
+      // Jikan Anime Search
       const data = await fetchDirect(`${JIKAN_BASE}/anime?q=${encodedQuery}&limit=10`);
       return data?.data ? data.data.map(mapJikanToMedia) : [];
     })()
   ]);
 
-  return [...cinemetaResults, ...jikanResults];
+  return [...movieResults, ...seriesResults, ...animeResults];
 };
 
 
@@ -231,6 +239,33 @@ export const fetchExtendedMeta = async (item: MediaItem): Promise<Partial<MediaI
 
   return {};
 };
+
+// Fetch Series Metadata (Season/Episode counts from TMDB via backend)
+export const fetchSeriesMetadata = async (imdbId: string): Promise<{
+  seasons: number[];
+  episodesPerSeason: { [season: number]: number };
+} | null> => {
+  console.log(`📡 [SeriesMetadata] Fetching from backend for IMDB ID: ${imdbId}`);
+
+  try {
+    const API_BASE = import.meta.env.VITE_API_URL || 'http://localhost:3001';
+    const response = await fetch(`${API_BASE}/api/series/metadata/${imdbId}`);
+
+    if (!response.ok) {
+      console.warn(`⚠️ [SeriesMetadata] Backend returned ${response.status}`);
+      return null;
+    }
+
+    const data = await response.json();
+    console.log(`✅ [SeriesMetadata] Successfully fetched:`, data);
+
+    return data;
+  } catch (error) {
+    console.error('❌ [SeriesMetadata] Fetch error:', error);
+    return null;
+  }
+};
+
 
 export const aggregateTorrents = async (item: MediaItem): Promise<TorrentSource[]> => {
   const queries: Promise<TorrentSource[]>[] = [];

@@ -1,13 +1,15 @@
-
 import React, { useEffect, useState, useMemo, useRef } from 'react';
 import { X, Play, Star, Calendar, Clock, Youtube, Globe, Download, ExternalLink, RefreshCw, Database, Film, Tv, Server, ChevronLeft, ChevronRight, MonitorPlay, ShieldCheck, ShieldAlert, Radio, ArrowDown, Info, Plug } from 'lucide-react';
-import { MediaItem, MediaType, TorrentSource } from '../types';
-import { fetchExtendedMeta, aggregateTorrents } from '../services/geminiService';
-import { TorrentList } from './TorrentList';
-import { AddonResults } from './AddonResults';
-import { fetchAddonStreams, StremioStream } from '../services/addonService';
-import { WebtorPlayer } from './WebtorPlayer';
-import { TorrentPlayer } from './TorrentPlayer';
+import { MediaItem, MediaType, TorrentSource } from '../../../types';
+import { fetchExtendedMeta, aggregateTorrents } from '../../../services/geminiService';
+import { TorrentPlayer } from '../../shared/players/TorrentPlayer';
+import { WebtorPlayer } from '../../shared/players/WebtorPlayer';
+import { EnhancedVideoPlayer } from '../../shared/players/EnhancedVideoPlayer';
+import { AddonResults } from '../../shared/ui/AddonResults';
+import { TorrentList } from '../../shared/ui/TorrentList';
+import { fetchAddonStreams, StremioStream } from '../../../services/addonService';
+import { AddToLibraryButton } from '../../shared/components/AddToLibraryButton';
+import { subtitleService } from '../../../services/subtitleService';
 
 
 
@@ -16,7 +18,7 @@ interface DetailsViewProps {
   onClose: () => void;
 }
 
-export const DetailsView: React.FC<DetailsViewProps> = ({ item, onClose }) => {
+export const MovieDetailsView: React.FC<DetailsViewProps> = ({ item, onClose }) => {
   const [details, setDetails] = useState<MediaItem>(item);
   const [torrentsLoading, setTorrentsLoading] = useState(false);
   const [showTrailer, setShowTrailer] = useState(false);
@@ -146,6 +148,7 @@ export const DetailsView: React.FC<DetailsViewProps> = ({ item, onClose }) => {
           const streams = await fetchAddonStreams(
             details.type,
             details.imdbId || '',
+            details.title,
             season,
             episode
           );
@@ -158,7 +161,7 @@ export const DetailsView: React.FC<DetailsViewProps> = ({ item, onClose }) => {
       };
       loadAddons();
     }
-  }, [activeTab, details.imdbId, season, episode]);
+  }, [activeTab, details.imdbId, details.title, season, episode]);
 
   const bestSourceLink = useMemo(() => {
     if (!details.torrents || details.torrents.length === 0) return undefined;
@@ -453,6 +456,26 @@ export const DetailsView: React.FC<DetailsViewProps> = ({ item, onClose }) => {
 
               {activeTab === 'WEBTORRENT' && (
                 <div className="space-y-4 animate-fadeIn">
+                  {/* Action Buttons */}
+                  <div className="flex gap-3">
+                    <AddToLibraryButton item={details} className="flex-shrink-0" />
+                    <button
+                      onClick={() => setShowTrailer(!showTrailer)}
+                      className="flex items-center gap-2 px-6 py-3 rounded-lg bg-white/10 text-white hover:bg-white/20 transition-all border border-white/20"
+                    >
+                      {details.trailerVideoId ? (
+                        <>
+                          <Youtube className="h-5 w-5 text-red-500" />
+                          <span>Trailer</span>
+                        </>
+                      ) : (
+                        <>
+                          <Youtube className="h-5 w-5 text-red-500 opacity-50" />
+                          <span className="opacity-70">No Trailer</span>
+                        </>
+                      )}
+                    </button>
+                  </div>
                   {/* Streaming Engine Selector */}
                   <div className="flex items-center gap-2 bg-gray-800/50 p-3 rounded-md border border-gray-700">
                     <span className="text-sm text-gray-400 font-medium">Streaming Engine:</span>
@@ -491,6 +514,7 @@ export const DetailsView: React.FC<DetailsViewProps> = ({ item, onClose }) => {
                         <TorrentPlayer
                           magnet={activeMagnet}
                           title={details.title}
+                          imdbId={details.imdbId}
                         />
                       )}
                     </div>
@@ -530,15 +554,31 @@ export const DetailsView: React.FC<DetailsViewProps> = ({ item, onClose }) => {
                           <Play className="h-5 w-5 fill-current" />
                           <span>Stream Torrent</span>
                         </button>
-                        <a
-                          href={bestSourceLink}
-                          target="_blank"
-                          rel="noopener noreferrer"
-                          className="w-full bg-slate-700 hover:bg-slate-600 text-white font-bold py-3 px-6 rounded-lg flex items-center justify-center space-x-2 transition-all no-underline"
-                        >
-                          <Download className="h-5 w-5" />
-                          <span>Download Magnet</span>
-                        </a>
+                        {bestSourceLink && (
+                          <button
+                            onClick={() => {
+                              const link = document.createElement('a');
+                              link.href = bestSourceLink;
+                              link.download = `${details.title}.torrent`;
+                              document.body.appendChild(link);
+                              link.click();
+                              document.body.removeChild(link);
+
+                              // Auto-download subtitles if IMDB ID is available
+                              if (details.imdbId) {
+                                subtitleService.downloadSubtitleFile(
+                                  details.imdbId,
+                                  details.title,
+                                  'en'
+                                ).catch(err => console.error('Subtitle download failed:', err));
+                              }
+                            }}
+                            className="flex items-center gap-2 px-4 py-2.5 bg-gradient-to-r from-purple-600 to-pink-600 hover:from-purple-700 hover:to-pink-700 text-white rounded-lg font-medium transition-all shadow-lg shadow-purple-500/30 hover:shadow-purple-500/50"
+                          >
+                            <Download className="h-5 w-5" />
+                            <span>Download Magnet{details.imdbId ? ' + Subtitles' : ''}</span>
+                          </button>
+                        )}
                       </>
                     ) : (
                       <button
@@ -605,7 +645,7 @@ export const DetailsView: React.FC<DetailsViewProps> = ({ item, onClose }) => {
                     // Actually, we can just force the effect to run by clearing streams and maybe adding a refresh trigger to dependency?
                     // For now, let's just re-fetch directly.
                     setAddonsLoading(true);
-                    fetchAddonStreams(details.type, details.imdbId || '', season, episode)
+                    fetchAddonStreams(details.type, details.imdbId || '', details.title, season, episode)
                       .then(setAddonStreams)
                       .finally(() => setAddonsLoading(false));
                   }}

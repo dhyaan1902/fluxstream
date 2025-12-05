@@ -17,7 +17,7 @@ export const MediaCard: React.FC<MediaCardProps> = ({ item, onClick }) => {
   return (
     <div
       tabIndex={0}
-      className="group relative bg-gray-900 rounded-md overflow-hidden cursor-pointer transition-all duration-200 hover:-translate-y-1 border border-gray-800 hover:border-blue-600"
+      className="group relative bg-gray-900 rounded-md overflow-hidden cursor-pointer transition-all duration-200 active:scale-95 lg:hover:-translate-y-1 border border-gray-800 lg:hover:border-blue-600"
       onClick={() => onClick(item)}
       onKeyDown={handleKeyPress}
     >
@@ -25,15 +25,15 @@ export const MediaCard: React.FC<MediaCardProps> = ({ item, onClick }) => {
         <img
           src={item.posterUrl || 'https://via.placeholder.com/300x450/000000/333333?text=No+Poster'}
           alt={item.title}
-          className="w-full h-full object-cover transition-transform duration-300 group-hover:scale-105"
+          className="w-full h-full object-cover transition-transform duration-300 lg:group-hover:scale-105"
           loading="lazy"
           onError={(e) => {
             (e.target as HTMLImageElement).src = 'https://via.placeholder.com/300x450/000000/333333?text=No+Poster';
           }}
         />
 
-        {/* Hover Overlay */}
-        <div className="absolute inset-0 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity duration-200 bg-black/60">
+        {/* Hover Overlay - Desktop Only */}
+        <div className="absolute inset-0 flex items-center justify-center opacity-0 lg:group-hover:opacity-100 transition-opacity duration-200 bg-black/60">
           <PlayCircle className="h-16 w-16 text-white" />
         </div>
 

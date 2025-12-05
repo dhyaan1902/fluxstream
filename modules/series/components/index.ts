@@ -1,0 +1,1 @@
+export { SeriesDetailsView } from './SeriesDetailsView';

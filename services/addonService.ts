@@ -13,6 +13,10 @@ export interface StremioAddon {
 export interface StremioStream {
     name?: string;
     title?: string;
+    fullTitle?: string;
+    size?: string;
+    seeders?: number;
+    quality?: string;
     infoHash?: string;
     url?: string;
     behaviorHints?: {
@@ -109,47 +113,54 @@ export const removeAddon = (addonId: string) => {
     localStorage.setItem(STORAGE_KEY, JSON.stringify(userAddons));
 };
 
+const API_BASE = import.meta.env.VITE_API_URL || 'http://localhost:3001';
+
 export const fetchAddonStreams = async (
     type: MediaType,
     imdbId: string,
+    title: string,
     season?: number,
     episode?: number
 ): Promise<StremioStream[]> => {
-    const addons = getAddons();
-    const streams: StremioStream[] = [];
-
     // Stremio type mapping
     const stremioType = type === MediaType.MOVIE ? 'movie' : 'series';
-    // For anime, it might be 'series' or 'movie' depending on the item, but usually 'series' for shows.
-    // The user's app distinguishes ANIME, but Stremio usually treats them as series/movie.
-    // We'll map ANIME to series for now if it has seasons, or movie if not? 
-    // Actually, usually it's just 'series' for TV anime.
+    // For anime, treat as series if it has seasons/episodes
     const finalType = type === MediaType.ANIME ? 'series' : stremioType;
 
     const idString = finalType === 'movie'
         ? imdbId
         : `${imdbId}:${season}:${episode}`;
 
-    const promises = addons.map(async (addon) => {
-        try {
-            const url = `${addon.transportUrl}/stream/${finalType}/${idString}.json`;
-            const res = await fetch(url);
-            if (!res.ok) return;
-            const data = await res.json();
+    try {
+        // Build query params for fallback support
+        const params = new URLSearchParams();
+        if (title) params.append('title', title);
+        if (season) params.append('season', season.toString());
+        if (episode) params.append('episode', episode.toString());
 
-            if (data.streams && Array.isArray(data.streams)) {
-                data.streams.forEach((s: any) => {
-                    streams.push({
-                        ...s,
-                        addonName: addon.name
-                    });
-                });
-            }
-        } catch (e) {
-            console.error(`Failed to fetch streams from ${addon.name}`, e);
-        }
-    });
+        const queryString = params.toString() ? `?${params.toString()}` : '';
+        const url = `${API_BASE}/api/stremio/streams/${finalType}/${idString}${queryString}`;
 
-    await Promise.all(promises);
-    return streams;
+        console.log(`[AddonService] Fetching streams: ${url}`);
+        const response = await fetch(url);
+        if (!response.ok) return [];
+
+        const streams = await response.json();
+
+        return streams.map((s: any) => ({
+            name: s.indexer,
+            title: s.title, // Backend parses title with size/seeds
+            fullTitle: s.fullTitle,
+            size: s.size,
+            seeders: s.seeders,
+            quality: s.quality,
+            infoHash: s.infoHash,
+            url: s.magnet, // Map backend 'magnet' to StremioStream 'url' (or handle in component)
+            behaviorHints: s.behaviorHints,
+            addonName: s.indexer
+        }));
+    } catch (e) {
+        console.error('Failed to fetch Stremio streams from backend:', e);
+        return [];
+    }
 };

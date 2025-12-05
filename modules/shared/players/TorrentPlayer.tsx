@@ -1,9 +1,11 @@
 import React, { useEffect, useState, useRef } from 'react';
 import { Download, RefreshCw, Users, ArrowDown, AlertTriangle, Play, Settings, X, Volume2, Subtitles } from 'lucide-react';
+import { subtitleService } from '../../../services/subtitleService';
 
 interface TorrentPlayerProps {
     magnet: string;
     title?: string;
+    imdbId?: string; // Add for subtitle fetching
 }
 
 interface TorrentFile {
@@ -39,7 +41,23 @@ interface TorrentStatus {
 
 const API_BASE = `${import.meta.env.VITE_API_URL || 'http://localhost:3001'}/api/torrent`;
 
-export const TorrentPlayer: React.FC<TorrentPlayerProps> = ({ magnet, title }) => {
+// Helper function to detect language from subtitle filename
+const detectLanguage = (filename: string): string => {
+    const lower = filename.toLowerCase();
+    if (lower.includes('.eng.') || lower.includes('.en.') || lower.includes('english')) return 'en';
+    if (lower.includes('.spa.') || lower.includes('.es.') || lower.includes('spanish')) return 'es';
+    if (lower.includes('.fre.') || lower.includes('.fr.') || lower.includes('french')) return 'fr';
+    if (lower.includes('.ger.') || lower.includes('.de.') || lower.includes('german')) return 'de';
+    if (lower.includes('.ita.') || lower.includes('.it.') || lower.includes('italian')) return 'it';
+    if (lower.includes('.por.') || lower.includes('.pt.') || lower.includes('portuguese')) return 'pt';
+    if (lower.includes('.jpn.') || lower.includes('.ja.') || lower.includes('japanese')) return 'ja';
+    if (lower.includes('.kor.') || lower.includes('.ko.') || lower.includes('korean')) return 'ko';
+    if (lower.includes('.chi.') || lower.includes('.zh.') || lower.includes('chinese')) return 'zh';
+    if (lower.includes('.hin.') || lower.includes('.hi.') || lower.includes('hindi')) return 'hi';
+    return 'unknown';
+};
+
+export const TorrentPlayer: React.FC<TorrentPlayerProps> = ({ magnet, title, imdbId }) => {
     const [status, setStatus] = useState<'loading' | 'ready' | 'error'>('loading');
     const [torrentId, setTorrentId] = useState<string | null>(null);
     const [files, setFiles] = useState<TorrentFile[]>([]);
@@ -52,6 +70,13 @@ export const TorrentPlayer: React.FC<TorrentPlayerProps> = ({ magnet, title }) =
     const [currentAudioTrack, setCurrentAudioTrack] = useState<string>('');
     const [currentSubtitle, setCurrentSubtitle] = useState<number>(-1);
     const [needsTranscoding, setNeedsTranscoding] = useState<boolean>(false);
+    const [videoDuration, setVideoDuration] = useState<number>(0);
+
+    // OpenSubtitles integration
+    const [externalSubtitleUrl, setExternalSubtitleUrl] = useState<string | null>(null);
+    const [subtitlesEnabled, setSubtitlesEnabled] = useState(true);
+    const [loadingSubtitles, setLoadingSubtitles] = useState(false);
+
     const videoRef = useRef<HTMLVideoElement>(null);
     const wakeLockRef = useRef<any>(null);
 
@@ -80,9 +105,37 @@ export const TorrentPlayer: React.FC<TorrentPlayerProps> = ({ magnet, title }) =
 
                 setSelectedFile(videoFile.index);
 
+                // Auto-detect subtitle files in the torrent
+                const subtitleFiles = data.files.filter((f: TorrentFile) =>
+                    /\.(srt|vtt|ass|ssa|sub)$/i.test(f.name)
+                );
+
+                // Store subtitle files for later use
+                if (subtitleFiles.length > 0) {
+                    console.log(`Found ${subtitleFiles.length} subtitle files:`, subtitleFiles.map(f => f.name));
+                    videoFile.subtitles = subtitleFiles.map((f, idx) => ({
+                        index: f.index,
+                        name: f.name,
+                        language: detectLanguage(f.name),
+                        label: f.name.split('/').pop() || `Subtitle ${idx + 1}`
+                    }));
+                }
+
                 // Check if file needs transcoding
                 const needsTranscode = /\.(mkv|avi|flv|wmv|m4v|3gp|divx)$/i.test(videoFile.name);
                 setNeedsTranscoding(needsTranscode);
+
+                // Fetch video metadata to get actual duration
+                try {
+                    const metadataRes = await fetch(`${API_BASE}/${data.id}/metadata/${videoFile.index}`);
+                    if (metadataRes.ok) {
+                        const metadata = await metadataRes.json();
+                        setVideoDuration(metadata.duration);
+                        console.log(`Video duration: ${metadata.duration}s (${Math.floor(metadata.duration / 60)}m ${Math.floor(metadata.duration % 60)}s)`);
+                    }
+                } catch (err) {
+                    console.warn('Failed to fetch metadata:', err);
+                }
 
                 setStatus('ready');
             } catch (err: any) {
@@ -208,6 +261,92 @@ export const TorrentPlayer: React.FC<TorrentPlayerProps> = ({ magnet, title }) =
         };
     }, [isPlaying]);
 
+    // Load subtitle files into video player
+    useEffect(() => {
+        const video = videoRef.current;
+        if (!video || !torrentId || !isPlaying) return;
+
+        const currentFile = files.find(f => f.index === selectedFile);
+        if (!currentFile?.subtitles || currentFile.subtitles.length === 0) return;
+
+        // Remove existing text tracks
+        while (video.textTracks.length > 0) {
+            const track = video.textTracks[0];
+            const trackElement = Array.from(video.querySelectorAll('track')).find(
+                t => t.track === track
+            );
+            if (trackElement) {
+                video.removeChild(trackElement);
+            }
+        }
+
+        // Add subtitle tracks
+        currentFile.subtitles.forEach((sub, idx) => {
+            const track = document.createElement('track');
+            track.kind = 'subtitles';
+            track.label = sub.label;
+            track.srclang = sub.language;
+            track.src = `${API_BASE}/${torrentId}/stream/${sub.index}`;
+
+            // Set first subtitle as default
+            if (idx === 0) {
+                track.default = true;
+                setCurrentSubtitle(0);
+            }
+
+            video.appendChild(track);
+        });
+
+        console.log(`Loaded ${currentFile.subtitles.length} subtitle tracks`);
+    }, [torrentId, selectedFile, isPlaying, files]);
+
+    // Fetch OpenSubtitles subtitles
+    useEffect(() => {
+        const fetchExternalSubtitles = async () => {
+            if (!torrentId || !imdbId) return;
+
+            setLoadingSubtitles(true);
+            try {
+                console.log('[TorrentPlayer] Fetching subtitles for:', imdbId);
+                const url = await subtitleService.getTorrentSubtitles(
+                    torrentId,
+                    selectedFile,
+                    imdbId,
+                    'en'
+                );
+
+                if (url) {
+                    console.log('[TorrentPlayer] Subtitle URL:', url);
+                    setExternalSubtitleUrl(url);
+
+                    // Enable the subtitle track after a short delay
+                    setTimeout(() => {
+                        const video = videoRef.current;
+                        if (video && video.textTracks.length > 0) {
+                            // Find and enable the OpenSubtitles track
+                            for (let i = 0; i < video.textTracks.length; i++) {
+                                const track = video.textTracks[i];
+                                if (track.label.includes('OpenSubtitles')) {
+                                    track.mode = 'showing';
+                                    console.log('[TorrentPlayer] Enabled subtitle track:', track.label);
+                                    break;
+                                }
+                            }
+                        }
+                    }, 500);
+                } else {
+                    console.log('[TorrentPlayer] No subtitles found');
+                }
+            } catch (error) {
+                console.error('[TorrentPlayer] Subtitle fetch error:', error);
+            } finally {
+                setLoadingSubtitles(false);
+            }
+        };
+
+        fetchExternalSubtitles();
+    }, [torrentId, selectedFile, imdbId]);
+
     // Handle audio track change
     const handleAudioTrackChange = (trackId: string) => {
         const video = videoRef.current;
@@ -304,22 +443,39 @@ export const TorrentPlayer: React.FC<TorrentPlayerProps> = ({ magnet, title }) =
                                 ref={videoRef}
                                 controls
                                 autoPlay
-                                preload="auto"
+                                preload="metadata"
                                 className="w-full h-full"
                                 src={getVideoSource()}
                                 crossOrigin="anonymous"
+                                onLoadedMetadata={(e) => {
+                                    // Override duration if we have metadata
+                                    if (videoDuration > 0 && e.currentTarget.duration !== videoDuration) {
+                                        console.log(`Setting video duration from metadata: ${videoDuration}s`);
+                                        (e.currentTarget as any).duration = videoDuration;
+                                    }
+                                }}
                             >
-                                {/* Add subtitle tracks */}
+                                {/* Torrent-embedded subtitles */}
                                 {files[selectedFile]?.subtitles?.map((subtitle, idx) => (
                                     <track
                                         key={subtitle.index}
                                         kind="subtitles"
                                         src={`${API_BASE}/${torrentId}/subtitle/${subtitle.index}`}
                                         srcLang={subtitle.language}
-                                        label={subtitle.label}
-                                        default={idx === 0}
+                                        label={`${subtitle.label} (Embedded)`}
                                     />
                                 ))}
+
+                                {/* OpenSubtitles external subtitle */}
+                                {externalSubtitleUrl && (
+                                    <track
+                                        kind="subtitles"
+                                        src={externalSubtitleUrl}
+                                        srcLang="en"
+                                        label="English (OpenSubtitles)"
+                                        default={subtitlesEnabled}
+                                    />
+                                )}
                             </video>
 
                             {/* Transcoding Indicator */}
@@ -329,6 +485,28 @@ export const TorrentPlayer: React.FC<TorrentPlayerProps> = ({ magnet, title }) =
                                     Transcoding
                                 </div>
                             )}
+
+                            {/* Subtitle Toggle Button */}
+                            <button
+                                onClick={() => {
+                                    const newState = !subtitlesEnabled;
+                                    setSubtitlesEnabled(newState);
+                                    const video = videoRef.current;
+                                    if (video && video.textTracks.length > 0) {
+                                        for (let i = 0; i < video.textTracks.length; i++) {
+                                            const track = video.textTracks[i];
+                                            track.mode = newState ? 'showing' : 'hidden';
+                                        }
+                                    }
+                                }}
+                                className="absolute top-4 right-20 z-30 bg-black/60 hover:bg-black/80 backdrop-blur-sm text-white p-3 rounded-lg transition-all"
+                                title={subtitlesEnabled ? 'Hide Subtitles' : 'Show Subtitles'}
+                            >
+                                <Subtitles className={`h-5 w-5 ${subtitlesEnabled ? 'text-cyan-400' : 'text-gray-400'}`} />
+                                {loadingSubtitles && (
+                                    <RefreshCw className="h-3 w-3 absolute top-1 right-1 animate-spin text-cyan-400" />
+                                )}
+                            </button>
 
                             {/* Settings Button */}
                             <button
