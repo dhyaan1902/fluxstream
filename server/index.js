@@ -9,7 +9,8 @@ import axios from "axios";
 import {  MOVIES  } from "@consumet/extensions";
 import ffmpegPath from "ffmpeg-static";
 import ffmpeg from "fluent-ffmpeg";
-
+import fs from 'fs';
+import natUpnp from 'nat-upnp';
 // Import anime routes
 import animeRouter from "./modules/anime/routes/anime.routes.js";
 
@@ -30,15 +31,353 @@ ffmpeg.setFfmpegPath(ffmpegPath);
 
 const app = express();
 const PORT = process.env.PORT || 3001;
+// ============================================
+// 1. BACKEND: index.js (Enhanced Torrent Endpoints)
+// ============================================
 
-// Initialize WebTorrent client
+// Replace WebTorrent client initialization with this:
 const client = new WebTorrent({
-    maxConns: 100,
-    uploadLimit: 10 * 1024, // 10 KB/s upload limit
-    downloadLimit: -1, // No download limit
-    dht: true,
+    maxConns: 150,
+    uploadLimit: -1,  // UNLIMITED (this is key!)
+    downloadLimit: -1,
+    dht: {
+        bootstrap: [
+            'router.bittorrent.com:6881',
+            'router.utorrent.com:6881',
+            'dht.transmissionbt.com:6881',
+            'dht.aelitis.com:6881'
+        ]
+    },
     webSeeds: true,
-    tracker: true
+    tracker: {
+        wrtc: true,
+        getAnnounceOpts: () => ({
+            numwant: 80,
+            uploaded: 0,
+            downloaded: 0
+        })
+    }
+});
+// Enhanced global tracker list
+const GLOBAL_TRACKERS = [
+    // WebSocket trackers for WebRTC
+    'wss://tracker.btorrent.xyz',
+    'wss://tracker.openwebtorrent.com',
+    'wss://tracker.webtorrent.dev',
+    'wss://tracker.files.fm:7073/announce',
+    
+    // High-quality UDP trackers
+    'udp://tracker.opentrackr.org:1337/announce',
+    'udp://open.stealth.si:80/announce',
+    'udp://tracker.torrent.eu.org:451/announce',
+    'udp://tracker.moeking.me:6969/announce',
+    'udp://explodie.org:6969/announce',
+    'udp://tracker1.bt.moack.co.kr:80/announce',
+    'udp://tracker.tiny-vps.com:6969/announce',
+    'udp://open.demonii.com:1337/announce',
+    'udp://tracker.openbittorrent.com:6969/announce',
+    'udp://exodus.desync.com:6969/announce',
+    'udp://tracker.opentrackr.org:1337/announce',
+    'udp://tracker.coppersurfer.tk:6969/announce',
+    'udp://9.rarbg.to:2710/announce',
+    'udp://9.rarbg.me:2710/announce',
+    'udp://tracker.leechers-paradise.org:6969/announce',
+    'udp://tracker.internetwarriors.net:1337/announce',
+    
+    // HTTPS trackers
+    'https://tracker.tamersunion.org:443/announce',
+    'https://tracker.gbitt.info:443/announce',
+    
+    // HTTP trackers
+    'http://tracker.openbittorrent.com:80/announce',
+    'http://open.acgnxtracker.com:80/announce'
+];
+
+
+
+// Log stats every 30 seconds
+setInterval(() => {
+    const totalPeers = client.torrents.reduce((sum, t) => sum + t.numPeers, 0);
+    const activeTorrents = client.torrents.filter(t => t.numPeers > 0).length;
+    console.log(`📊 [WebTorrent] ${activeTorrents}/${client.torrents.length} torrents active | ${totalPeers} total peers connected`);
+}, 30000);
+
+
+app.use(cors({
+    origin: '*',
+    methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+    allowedHeaders: ['Content-Type', 'Authorization'],
+    credentials: true
+}));
+
+// Handle preflight OPTIONS requests
+app.options('*', cors());
+
+// Parse JSON bodies
+app.use(express.json());
+
+
+// Enhanced /api/torrent/add endpoint// Enhanced /api/torrent/add endpoint
+app.post('/api/torrent/add', (req, res) => {
+    if (!req.body || Object.keys(req.body).length === 0) {
+        return res.status(400).json({ error: 'Request body required' });
+    }
+
+    const { magnet } = req.body;
+
+    if (!magnet) {
+        return res.status(400).json({ error: 'Magnet link required' });
+    }
+
+    // Extract infoHash
+    const infoHashMatch = magnet.match(/btih:([a-f0-9]{40})/i);
+    const infoHash = infoHashMatch ? infoHashMatch[1].toLowerCase() : null;
+
+    // Check for duplicates in our Map only
+    if (infoHash) {
+        for (const [id, data] of torrents.entries()) {
+            if (data.torrent.infoHash === infoHash) {
+                console.log(`♻️ [Torrent] Reusing: ${infoHash.substring(0, 8)}...`);
+                touchTorrent(id);
+                return res.json({
+                    id,
+                    files: data.files,
+                    infoHash: data.torrent.infoHash,
+                    magnetURI: data.torrent.magnetURI,
+                    reused: true,
+                    peers: data.torrent.numPeers
+                });
+            }
+        }
+    }
+
+    const torrentId = Date.now().toString();
+    let readyTimeout;
+    let torrent;
+    let peerDiscoveryTimeout;
+
+    // Give 45 seconds for initial peer discovery
+    readyTimeout = setTimeout(() => {
+        console.error(`⏱️ [Torrent ${torrentId}] Timeout - no metadata received`);
+        if (torrent) {
+            torrent.destroy();
+        }
+        if (!res.headersSent) {
+            res.status(504).json({ 
+                error: 'Torrent connection timeout',
+                suggestion: 'Try a different torrent source or check your connection'
+            });
+        }
+    }, 45000);
+
+    try {
+        torrent = client.add(magnet, { 
+            path: '/tmp/webtorrent',
+            strategy: 'sequential',
+            maxWebConns: 100,
+            announce: GLOBAL_TRACKERS,
+            private: false,
+            destroyStoreOnDestroy: true
+        });
+
+        console.log(`🔄 [Torrent ${torrentId}] Added, discovering peers...`);
+
+        // Track peer discovery
+        let initialPeerCount = 0;
+        peerDiscoveryTimeout = setInterval(() => {
+            if (torrent.numPeers > initialPeerCount) {
+                console.log(`🔗 [Torrent ${torrentId}] Found ${torrent.numPeers} peers`);
+                initialPeerCount = torrent.numPeers;
+            }
+        }, 2000);
+
+        torrent.on('ready', () => {
+            clearTimeout(readyTimeout);
+            clearInterval(peerDiscoveryTimeout);
+            
+            console.log(`✅ [Torrent ${torrentId}] Ready | ${torrent.files.length} files | ${torrent.numPeers} peers | ${(torrent.length / 1024 / 1024 / 1024).toFixed(2)} GB`);
+
+            // File processing helpers
+            const getFileType = (filename) => {
+                if (/\.(mp4|mkv|avi|webm|mov|flv|wmv|m4v|3gp)$/i.test(filename)) return 'video';
+                if (/\.(srt|vtt|ass|ssa|sub|idx)$/i.test(filename)) return 'subtitle';
+                if (/\.(mp3|aac|flac|wav|ogg|m4a|wma)$/i.test(filename)) return 'audio';
+                return 'other';
+            };
+
+            const extractLanguage = (filename) => {
+                const patterns = [
+                    { regex: /\b(en|eng|english)\b/i, code: 'en', label: 'English' },
+                    { regex: /\b(es|spa|spanish|español)\b/i, code: 'es', label: 'Spanish' },
+                    { regex: /\b(fr|fra|fre|french|français)\b/i, code: 'fr', label: 'French' },
+                    { regex: /\b(de|ger|deu|german|deutsch)\b/i, code: 'de', label: 'German' },
+                    { regex: /\b(it|ita|italian)\b/i, code: 'it', label: 'Italian' },
+                    { regex: /\b(pt|por|portuguese)\b/i, code: 'pt', label: 'Portuguese' },
+                    { regex: /\b(ja|jpn|japanese)\b/i, code: 'ja', label: 'Japanese' },
+                    { regex: /\b(zh|chi|zho|chinese)\b/i, code: 'zh', label: 'Chinese' },
+                    { regex: /\b(ko|kor|korean)\b/i, code: 'ko', label: 'Korean' },
+                    { regex: /\b(ar|ara|arabic)\b/i, code: 'ar', label: 'Arabic' },
+                    { regex: /\b(hi|hin|hindi)\b/i, code: 'hi', label: 'Hindi' },
+                    { regex: /\b(ru|rus|russian)\b/i, code: 'ru', label: 'Russian' },
+                ];
+
+                for (const { regex, code, label } of patterns) {
+                    if (regex.test(filename.toLowerCase())) {
+                        return { code, label };
+                    }
+                }
+                return { code: 'unknown', label: 'Unknown' };
+            };
+
+            const getBaseName = (filename) => {
+                return filename.replace(/\.[^.]+$/, '').toLowerCase();
+            };
+
+            const arePathsRelated = (videoPath, subPath) => {
+                const videoDir = path.dirname(videoPath);
+                const subDir = path.dirname(subPath);
+                if (videoDir === subDir) return true;
+                if (subDir.startsWith(videoDir + path.sep)) {
+                    const subFolderName = path.basename(subDir).toLowerCase();
+                    return ['sub', 'subs', 'subtitle', 'subtitles', 'caption', 'captions', 'cc'].some(n => 
+                        subFolderName.includes(n)
+                    );
+                }
+                return false;
+            };
+
+            // Process files
+            const files = torrent.files.map((file, index) => ({
+                index,
+                name: file.name,
+                length: file.length,
+                path: file.path,
+                type: getFileType(file.name)
+            }));
+
+            const videoFiles = files.filter(f => f.type === 'video');
+            const subtitleFiles = files.filter(f => f.type === 'subtitle');
+
+            console.log(`📁 [Torrent ${torrentId}] ${videoFiles.length} videos, ${subtitleFiles.length} subtitles`);
+
+            // Match subtitles to videos
+            const filesWithSubtitles = files.map(file => {
+                if (file.type !== 'video') return file;
+
+                const videoFileName = path.basename(file.name);
+                const videoBase = getBaseName(videoFileName);
+
+                const matchedSubtitles = subtitleFiles
+                    .filter(sub => {
+                        const subFileName = path.basename(sub.name);
+                        const subBase = getBaseName(subFileName);
+                        const filenameSimilar = subBase.includes(videoBase) || 
+                                               videoBase.includes(subBase) ||
+                                               subBase.split(/[._-]/).some(part => 
+                                                   videoBase.includes(part) && part.length > 3
+                                               );
+                        const pathRelated = arePathsRelated(file.path, sub.path);
+                        return filenameSimilar || pathRelated;
+                    })
+                    .map(sub => {
+                        const language = extractLanguage(sub.name);
+                        return {
+                            index: sub.index,
+                            name: sub.name,
+                            language: language.code,
+                            label: language.label
+                        };
+                    });
+
+                if (matchedSubtitles.length > 0) {
+                    console.log(`  📝 ${file.name}: ${matchedSubtitles.length} subtitle(s) matched`);
+                }
+
+                return { ...file, subtitles: matchedSubtitles };
+            });
+
+            torrents.set(torrentId, {
+                torrent,
+                files: filesWithSubtitles,
+                lastAccessed: Date.now(),
+                createdAt: Date.now()
+            });
+
+            const largestFile = filesWithSubtitles.reduce((a, b) => a.length > b.length ? a : b);
+            cacheStats.add(torrentId, largestFile.name, largestFile.length);
+
+            if (!res.headersSent) {
+                res.json({
+                    id: torrentId,
+                    files: filesWithSubtitles,
+                    infoHash: torrent.infoHash,
+                    magnetURI: torrent.magnetURI,
+                    totalSize: torrent.length,
+                    name: torrent.name,
+                    peers: torrent.numPeers
+                });
+            }
+        });
+
+        // Enhanced event logging
+        torrent.on('wire', (wire, addr) => {
+            console.log(`🔗 [Torrent ${torrentId}] Peer: ${addr || 'WebRTC'}`);
+        });
+
+        let lastProgress = 0;
+        torrent.on('download', () => {
+            const currentProgress = Math.floor(torrent.progress * 100);
+            if (currentProgress > lastProgress && currentProgress % 10 === 0) {
+                console.log(`⬇️  [Torrent ${torrentId}] ${currentProgress}% | ${torrent.numPeers} peers | ${(torrent.downloadSpeed / 1024 / 1024).toFixed(2)} MB/s`);
+                lastProgress = currentProgress;
+            }
+        });
+
+        torrent.on('error', (err) => {
+            clearTimeout(readyTimeout);
+            clearInterval(peerDiscoveryTimeout);
+            console.error(`❌ [Torrent ${torrentId}]`, err.message);
+            if (!res.headersSent) {
+                res.status(500).json({ error: err.message });
+            }
+        });
+
+        torrent.on('warning', (err) => {
+            console.warn(`⚠️  [Torrent ${torrentId}]`, err.message);
+        });
+
+    } catch (err) {
+        clearTimeout(readyTimeout);
+        clearInterval(peerDiscoveryTimeout);
+        console.error('Failed to add torrent:', err);
+        
+        if (err.message && err.message.includes('duplicate torrent')) {
+            const existing = Array.from(torrents.values()).find(t => 
+                t.torrent && infoHash && t.torrent.infoHash === infoHash
+            );
+            
+            if (existing) {
+                const existingId = Array.from(torrents.entries())
+                    .find(([_, data]) => data.torrent === existing.torrent)?.[0];
+                    
+                if (existingId) {
+                    touchTorrent(existingId);
+                    return res.json({
+                        id: existingId,
+                        files: existing.files,
+                        infoHash: existing.torrent.infoHash,
+                        magnetURI: existing.torrent.magnetURI,
+                        reused: true,
+                        peers: existing.torrent.numPeers
+                    });
+                }
+            }
+        }
+        
+        if (!res.headersSent) {
+            res.status(500).json({ error: err.message });
+        }
+    }
 });
 
 // Using FlixHQ for Series/Movies
@@ -177,10 +516,13 @@ process.on('SIGTERM', () => {
     cleanupAllTorrents();
     process.exit(0);
 });
+// Find this section (around line 542):
+// app.use(cors());
+// app.use(express.json());
 
-app.use(cors());
-app.use(express.json());
+// REPLACE WITH:
 
+// Enhanced CORS configuration
 // --- Anime Routes ---
 app.use('/anime', animeRouter);
 
@@ -529,171 +871,6 @@ app.get('/api/indexer/search', async (req, res) => {
 // --- Torrent Routes ---
 
 // Add magnet and get torrent ID
-app.post('/api/torrent/add', (req, res) => {
-    const { magnet } = req.body;
-
-    if (!magnet) {
-        return res.status(400).json({ error: 'Magnet link required' });
-    }
-
-    const torrentId = Date.now().toString();
-    let readyTimeout;
-    let torrent;
-
-    // Set timeout for torrent ready event (30 seconds)
-    readyTimeout = setTimeout(() => {
-        console.error(`⏱️ [Torrent] Timeout waiting for torrent ${torrentId} to be ready`);
-        if (torrent) {
-            torrent.destroy();
-        }
-        res.status(504).json({ error: 'Torrent connection timeout - no peers found' });
-    }, 30000);
-
-    try {
-        torrent = client.add(magnet, { path: '/tmp/webtorrent' });
-
-        torrent.on('ready', () => {
-            // Clear the timeout since torrent is ready
-            clearTimeout(readyTimeout);
-            console.log(`✅ [Torrent] ${torrentId} is ready, found ${torrent.files.length} files`);
-
-            // Helper function to determine file type
-            const getFileType = (filename) => {
-                if (/\.(mp4|mkv|avi|webm|mov|flv|wmv)$/i.test(filename)) return 'video';
-                if (/\.(srt|vtt)$/i.test(filename)) return 'subtitle';
-                return 'other';
-            };
-
-            // Helper function to extract language from subtitle filename
-            const extractLanguage = (filename) => {
-                const langPatterns = [
-                    { regex: /\.(en|eng|english)\./, lang: 'en', label: 'English' },
-                    { regex: /\.(es|spa|spanish)\./, lang: 'es', label: 'Spanish' },
-                    { regex: /\.(fr|fra|french)\./, lang: 'fr', label: 'French' },
-                    { regex: /\.(de|ger|german)\./, lang: 'de', label: 'German' },
-                    { regex: /\.(it|ita|italian)\./, lang: 'it', label: 'Italian' },
-                    { regex: /\.(pt|por|portuguese)\./, lang: 'pt', label: 'Portuguese' },
-                    { regex: /\.(ja|jpn|japanese)\./, lang: 'ja', label: 'Japanese' },
-                    { regex: /\.(zh|chi|chinese)\./, lang: 'zh', label: 'Chinese' },
-                    { regex: /\.(ko|kor|korean)\./, lang: 'ko', label: 'Korean' },
-                    { regex: /\.(ar|ara|arabic)\./, lang: 'ar', label: 'Arabic' },
-                    { regex: /\.(hi|hin|hindi)\./, lang: 'hi', label: 'Hindi' },
-                ];
-
-                for (const { regex, lang, label } of langPatterns) {
-                    if (regex.test(filename.toLowerCase())) {
-                        return { code: lang, label };
-                    }
-                }
-                return { code: 'unknown', label: 'Unknown' };
-            };
-
-            // Helper function to get base name without extension
-            const getBaseName = (filename) => {
-                return filename.replace(/\.[^.]+$/, '').toLowerCase();
-            };
-
-            // Helper to check if subtitle path is related to video path
-            const arePathsRelated = (videoPath, subPath) => {
-                const videoDir = path.dirname(videoPath);
-                const subDir = path.dirname(subPath);
-
-                // Same directory
-                if (videoDir === subDir) return true;
-
-                // Subtitle in subfolder of video directory
-                if (subDir.startsWith(videoDir + path.sep)) {
-                    const subFolderName = path.basename(subDir).toLowerCase();
-                    // Common subtitle folder names
-                    const commonSubFolders = ['sub', 'subs', 'subtitle', 'subtitles',
-                        'caption', 'captions', 'cc'];
-                    return commonSubFolders.some(name => subFolderName.includes(name));
-                }
-
-                return false;
-            };
-
-            // Map files with type information
-            const files = torrent.files.map((file, index) => ({
-                index,
-                name: file.name,
-                length: file.length,
-                path: file.path,
-                type: getFileType(file.name)
-            }));
-
-            // Find all video and subtitle files
-            const videoFiles = files.filter(f => f.type === 'video');
-            const subtitleFiles = files.filter(f => f.type === 'subtitle');
-
-            // Auto-match subtitles to videos
-            const filesWithSubtitles = files.map(file => {
-                if (file.type !== 'video') return file;
-
-                const videoBaseName = getBaseName(file.name);
-                const matchedSubtitles = subtitleFiles
-                    .filter(sub => {
-                        // Strategy 1: Filename similarity (existing logic)
-                        const videoFileName = path.basename(file.name);
-                        const subFileName = path.basename(sub.name);
-                        const videoBase = getBaseName(videoFileName);
-                        const subBase = getBaseName(subFileName);
-
-                        const filenameSimilar = subBase.includes(videoBase) || videoBase.includes(subBase);
-
-                        // Strategy 2: Path proximity (new logic for nested folders)
-                        const pathRelated = arePathsRelated(file.path, sub.path);
-
-                        // Match if either strategy succeeds
-                        return filenameSimilar || pathRelated;
-                    })
-                    .map(sub => {
-                        const language = extractLanguage(sub.name);
-                        return {
-                            index: sub.index,
-                            name: sub.name,
-                            language: language.code,
-                            label: language.label
-                        };
-                    });
-
-                return {
-                    ...file,
-                    subtitles: matchedSubtitles
-                };
-            });
-
-            torrents.set(torrentId, {
-                torrent,
-                files: filesWithSubtitles,
-                lastAccessed: Date.now(),
-                createdAt: Date.now()
-            });
-
-            // Track in database for cache management
-            const largestFile = filesWithSubtitles.reduce((a, b) => a.length > b.length ? a : b);
-            cacheStats.add(torrentId, largestFile.name, largestFile.length);
-
-            res.json({
-                id: torrentId,
-                files: filesWithSubtitles,
-                infoHash: torrent.infoHash
-            });
-        });
-
-        torrent.on('error', (err) => {
-            clearTimeout(readyTimeout);
-            console.error('Torrent error:', err);
-            if (!res.headersSent) {
-                res.status(500).json({ error: err.message });
-            }
-        });
-    } catch (err) {
-        clearTimeout(readyTimeout);
-        console.error('Failed to add torrent:', err);
-        res.status(500).json({ error: err.message });
-    }
-});
 
 // Stream file with range support
 app.get('/api/torrent/:id/stream/:fileIndex', (req, res) => {
@@ -846,8 +1023,8 @@ app.get('/api/torrent/:id/metadata/:fileIndex', async (req, res) => {
     try {
         // Create a temporary file path for ffprobe
         const tempFilePath = path.join('/tmp', `metadata-${id}-${fileIndex}.tmp`);
-        const writeStream = require('fs').createWriteStream(tempFilePath);
-        
+        const writeStream = fs.createWriteStream(tempFilePath);
+
         // Stream first 10MB to temp file for metadata extraction
         const readStream = file.createReadStream({ start: 0, end: 1024 * 1024 * 10 });
         
@@ -857,7 +1034,7 @@ app.get('/api/torrent/:id/metadata/:fileIndex', async (req, res) => {
             // Now use ffprobe on the temp file
             ffmpeg.ffprobe(tempFilePath, (err, metadata) => {
                 // Clean up temp file
-                require('fs').unlink(tempFilePath, (unlinkErr) => {
+                fs.unlink(tempFilePath, (unlinkErr) => {
                     if (unlinkErr) console.error('Failed to delete temp file:', unlinkErr);
                 });
 
