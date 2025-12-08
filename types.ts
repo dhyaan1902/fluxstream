@@ -36,7 +36,8 @@ export interface MediaItem {
   runtime?: string;
 }
 
-export type ViewState = 'HOME' | 'MOVIES' | 'SERIES' | 'ANIME' | 'SEARCH';
+// View States
+export type ViewState = 'DASHBOARD' | 'HOME' | 'MOVIES' | 'SERIES' | 'ANIME' | 'SEARCH' | 'DOWNLOADS' | 'HISTORY' | 'LIBRARY' | 'SETTINGS';
 
 export interface StremioAddon {
   id: string;

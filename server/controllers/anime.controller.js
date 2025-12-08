@@ -1,4 +1,4 @@
-const animeService = require('../services/anime.service');
+import animeService from "../services/anime.service.js";
 
 /**
  * Search for anime
@@ -93,8 +93,8 @@ async function getStreamFromProvider(req, res) {
     }
 }
 
-module.exports = {
-    searchAnime,
+export default {
+    searchAnime;,
     getAnimeInfo,
     getAnimeEpisodes,
     getAnimeStream,
